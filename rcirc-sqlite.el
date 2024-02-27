@@ -5,7 +5,7 @@
 ;; Author: Matto Fransen <matto@matto.nl>
 ;; Maintainer: Matto Fransen <matto@matto.nl>
 ;; Url: https://codeberg.org/mattof/rcirc-sqlite
-;; Version: 0.1.3
+;; Version: 0.1.4
 ;; Keywords: comm
 ;; Package-Requires: ((emacs "30.0"))
 
@@ -81,6 +81,12 @@ otherwise no connection has been opened.")
 (defvar rcirc-sqlite-drill-down-method nil
   "Variable to store how to drill down from the stats.")
 
+(defconst rcirc-sqlite-all-channels "All channels")
+(defconst rcirc-sqlite-all-nicks "All nicks")
+(defconst rcirc-sqlite-nicks-per-channel "Nicks per channel")
+(defconst rcirc-sqlite-channels-per-nick "Channels per nick")
+(defconst rcirc-sqlite-anytime "Anytime")
+
 (defun rcirc-sqlite--conn ()
   "Return an open database connection, or open one up."
   (or rcirc-sqlite--conn
@@ -152,11 +158,11 @@ ARG-LIST is a list with the requested nick and/or channel.
 	(from "")
 	(dbdata ()))
     (setq rcirc-sqlite-drill-down-method arg-list)
-    (cond ((string= (car arg-list) "Nicks per channel")
+    (cond ((string= (car arg-list) rcirc-sqlite-nicks-per-channel)
 	   (setq dimension "nicks")
 	   (push "channel" rcirc-sqlite-drill-down-method)
 	   (setq from "(SELECT channel, nick FROM rcirclogs GROUP BY channel,nick)"))
-	  ((string= (car arg-list) "Channels per nick")
+	  ((string= (car arg-list) rcirc-sqlite-channels-per-nick)
 	   (setq column "nick")
 	   (setq dimension "channels")
 	   (push "nick" rcirc-sqlite-drill-down-method)
@@ -166,7 +172,7 @@ ARG-LIST is a list with the requested nick and/or channel.
 	   (setq dimension "messages")
 	   (setq from "rcirclogs where channel = ?")
 	   (setq dbdata (cdr arg-list)))
-	  ((string= (car arg-list) "All nicks")
+	  ((string= (car arg-list) rcirc-sqlite-all-nicks)
 	   (push "channel" rcirc-sqlite-drill-down-method)
 	   (setq from "rcirclogs"))
 	  (t
@@ -188,11 +194,11 @@ offset and limit."
 	(dbquery "SELECT * FROM rcirclogs")
 	(dbdata ()))
     (pcase-let ((`(,channel ,when ,unlimited ,offset ,limit) arg-list))
-      (unless (string= channel "All channels")
+      (unless (string= channel rcirc-sqlite-all-channels)
 	(setq dbquery (concat dbquery " WHERE channel=?"))
 	(push channel dbdata))
-      (unless (string= when "Anytime")
-	(if (string= channel "All channels")
+      (unless (string= when rcirc-sqlite-anytime)
+	(if (string= channel rcirc-sqlite-all-channels)
 	    (setq dbquery (concat dbquery " WHERE "))
 	  (setq dbquery (concat dbquery " AND ")))
 	(setq dbquery (concat dbquery "strftime('%Y-%m', time, 'unixepoch')=?"))
@@ -216,13 +222,13 @@ channel, month and/or nick to narrow the search to."
 	(dbquery "SELECT * FROM rcirclogs WHERE rcirclogs=?"))
     (pcase-let ((`(,query ,channel ,when ,nick) arg-list))
       (let ((dbdata (list query)))
-	(unless (string= channel "All channels")
+	(unless (string= channel rcirc-sqlite-all-channels)
 	  (setq dbquery (concat dbquery " AND channel=?"))
 	  (push channel dbdata))
-	(unless (string= when "Anytime")
+	(unless (string= when rcirc-sqlite-anytime)
 	  (setq dbquery (concat dbquery " AND strftime('%Y-%m', time, 'unixepoch')=?"))
 	  (push when dbdata))
-	(unless (string= nick "All nicks")
+	(unless (string= nick rcirc-sqlite-all-nicks)
 	  (setq dbquery (concat dbquery " AND nick=?"))
 	  (push nick dbdata))
 	(setq dbquery (concat dbquery " ORDER BY rank"))
@@ -237,10 +243,10 @@ ARG-LIST defines which records to select."
 	(dbdata ()))
     (pcase-let ((`(,what ,where ,nick) arg-list))
       (cond
-       ((string= nick "Channels per nick")
+       ((string= nick rcirc-sqlite-channels-per-nick)
 	(setq dbquery (concat dbquery "nick=?"))
 	(push what dbdata))
-       ((string= nick "All nicks")
+       ((string= nick rcirc-sqlite-all-nicks)
 	(setq dbquery (concat dbquery "channel=?"))
 	(push what dbdata))
        (t
@@ -345,7 +351,7 @@ arguments in ARG-LIST.  IDENTSTR explains which stat is shown."
 Called from `rcirc-sqlite-two-column-mode'."
 (interactive nil rcirc-sqlite-two-column-mode)
 (cond
- ((string= (nth 1 rcirc-sqlite-drill-down-method) "Nicks per channel")
+ ((string= (nth 1 rcirc-sqlite-drill-down-method) rcirc-sqlite-nicks-per-channel)
   (let ((arg-list (list "Channel" (tabulated-list-get-id))))
     (rcirc-sqlite-display-two-column-tabulation-list
      (format "Stats (%s)" (tabulated-list-get-id))
@@ -362,25 +368,30 @@ Called from `rcirc-sqlite-two-column-mode'."
 
 (defun rcirc-sqlite-select-channel ()
   "Provide completion to select a channel."
-  (completing-read
-   "Select a channel (use completion): "
-   (append (list "All channels") (rcirc-sqlite-db-query-channels))))
+  (let ((default (or (bound-and-true-p rcirc-target)
+		     rcirc-sqlite-all-channels)))
+    (completing-read
+     (format-prompt "Select a channel" default)
+     (cons rcirc-sqlite-all-channels (rcirc-sqlite-db-query-channels))
+     nil nil nil nil default)))
 
-(defun rcirc-sqlite-select-nick (wild-card-values)
+(defun rcirc-sqlite-select-nick (wild-card-value)
   "Provide completion to select a nick.
-Extend the list of nicks with WILD-CARD-VALUES to offer the
-user more choices."
+Extend the list of nicks with WILD-CARD-VALUE to offer the user more
+choices.  This will also be used as the default choice."
   (completing-read
-   "Select a nick (use completion): "
-   (append wild-card-values (rcirc-sqlite-db-query-nicks))))
+   (format-prompt "Select a nick" wild-card-value)
+   (append wild-card-value (rcirc-sqlite-db-query-nicks))
+   nil nil nil nil wild-card-value))
 
-(defun rcirc-sqlite-select-month (wild-card-values)
+(defun rcirc-sqlite-select-month (wild-card-value)
   "Provide completion to select a year and month.
-Extend the list of months with WILD-CARD-VALUES to offer the
-user more choices."
+Extend the list of months with WILD-CARD-VALUE to offer the user more
+choices.  This will also be used as the default choice."
   (completing-read
-   "Select a month (use completion): "
-   (append wild-card-values (rcirc-sqlite-db-query-months))))
+   (format-prompt "Select a month" wild-card-value)
+   (cons wild-card-value (rcirc-sqlite-db-query-months))
+   nil nil nil nil wild-card-value))
 
 (defun rcirc-sqlite-view-log (channel when &optional unlimited offset limit)
   "View the logs of a specific CHANNEL.
@@ -391,7 +402,7 @@ When called with non-nil UNLIMITED, show all the rows.
 Otherwise offset and limit are used; in that case  both offset
 and limit have to be provided."
   (interactive (list (rcirc-sqlite-select-channel)
-		     (rcirc-sqlite-select-month (list "Anytime"))))
+		     (rcirc-sqlite-select-month rcirc-sqlite-anytime)))
   (let ((searcharg-list (list channel when unlimited offset limit)))
     (rcirc-sqlite-display-tabulation-list
      (format "View log (%s %s)" channel when)
@@ -404,8 +415,8 @@ Optional narrow search in a specific CHANNEL and/or with a specific NICK.
 The results are displayed a new buffer."
   (interactive (list (read-string "Search for: ")
                      (rcirc-sqlite-select-channel)
-		     (rcirc-sqlite-select-month (list "Anytime"))
-		     (rcirc-sqlite-select-nick (list "All nicks"))))
+		     (rcirc-sqlite-select-month rcirc-sqlite-anytime)
+		     (rcirc-sqlite-select-nick rcirc-sqlite-all-nicks)))
   (let ((searcharg-list (list query channel when nick)))
     (rcirc-sqlite-display-tabulation-list
      (format "Search %s (%s %s %s)" query channel when nick)
@@ -415,9 +426,9 @@ The results are displayed a new buffer."
   "Display overview of the number of rows per channel.
 Optionally narrow to a specific NICK.
 The results are displayed a new buffer."
-  (interactive (list (rcirc-sqlite-select-nick (list "All nicks"
-						     "Nicks per channel"
-						     "Channels per nick"))))
+  (interactive (list (rcirc-sqlite-select-nick (list rcirc-sqlite-all-nicks
+						     rcirc-sqlite-nicks-per-channel
+						     rcirc-sqlite-channels-per-nick))))
   (let ((searcharg-list (list nick)))
     (rcirc-sqlite-display-two-column-tabulation-list
      (format "Stats (%s)" nick)
